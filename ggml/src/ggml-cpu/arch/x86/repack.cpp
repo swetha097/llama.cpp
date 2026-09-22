@@ -6871,3 +6871,120 @@ void ggml_gemm_f16_8x8_f32(int n, float * GGML_RESTRICT s, size_t bs, const void
 
     ggml_gemm_f16_8x8_f32_generic(n, s, bs, vx, vy, nr, nc);
 }
+
+void ggml_gemv_f16_8x16_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+    assert(nr == 1);
+    assert(n % 16 == 0);
+    assert(nc % 8 == 0);
+
+    UNUSED(bs);
+    UNUSED(nr);
+
+#if defined(__AVX512F__)
+    const int nb = n / 16;
+    const block_f16x16 * b_ptr_start = (const block_f16x16 *) vx;
+    const float *        a_ptr       = (const float *) vy;
+
+    for (int x = 0; x < nc / 8; x++) {
+        const block_f16x16 * b_ptr = b_ptr_start + x * nb;
+
+        __m512 acc0 = _mm512_setzero_ps();
+        __m512 acc1 = _mm512_setzero_ps();
+        __m512 acc2 = _mm512_setzero_ps();
+        __m512 acc3 = _mm512_setzero_ps();
+        __m512 acc4 = _mm512_setzero_ps();
+        __m512 acc5 = _mm512_setzero_ps();
+        __m512 acc6 = _mm512_setzero_ps();
+        __m512 acc7 = _mm512_setzero_ps();
+
+        for (int l = 0; l < nb; l++) {
+            const __m512 act = _mm512_loadu_ps(a_ptr + l * 16);
+
+            acc0 = _mm512_fmadd_ps(_mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +   0))), act, acc0);
+            acc1 = _mm512_fmadd_ps(_mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  16))), act, acc1);
+            acc2 = _mm512_fmadd_ps(_mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  32))), act, acc2);
+            acc3 = _mm512_fmadd_ps(_mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  48))), act, acc3);
+            acc4 = _mm512_fmadd_ps(_mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  64))), act, acc4);
+            acc5 = _mm512_fmadd_ps(_mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  80))), act, acc5);
+            acc6 = _mm512_fmadd_ps(_mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  96))), act, acc6);
+            acc7 = _mm512_fmadd_ps(_mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs + 112))), act, acc7);
+        }
+
+        s[x * 8 + 0] = _mm512_reduce_add_ps(acc0);
+        s[x * 8 + 1] = _mm512_reduce_add_ps(acc1);
+        s[x * 8 + 2] = _mm512_reduce_add_ps(acc2);
+        s[x * 8 + 3] = _mm512_reduce_add_ps(acc3);
+        s[x * 8 + 4] = _mm512_reduce_add_ps(acc4);
+        s[x * 8 + 5] = _mm512_reduce_add_ps(acc5);
+        s[x * 8 + 6] = _mm512_reduce_add_ps(acc6);
+        s[x * 8 + 7] = _mm512_reduce_add_ps(acc7);
+    }
+    return;
+#endif
+
+    ggml_gemv_f16_8x16_f32_generic(n, s, bs, vx, vy, nr, nc);
+}
+
+void ggml_gemm_f16_8x16_f32(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, const void * GGML_RESTRICT vy, int nr, int nc) {
+    assert(n % 16 == 0);
+    assert(nr % 4 == 0);
+    assert(nc % 8 == 0);
+
+#if defined(__AVX512F__)
+    const int nb = n / 16;
+    const block_f16x16 * b_ptr_start = (const block_f16x16 *) vx;
+    const float *        a_ptr_start = (const float *) vy;
+
+    for (int y = 0; y < nr / 4; y++) {
+        const float * a_ptrs[4];
+        a_ptrs[0] = a_ptr_start + y * 4 * n;
+        a_ptrs[1] = a_ptrs[0] + n;
+        a_ptrs[2] = a_ptrs[1] + n;
+        a_ptrs[3] = a_ptrs[2] + n;
+
+        for (int x = 0; x < nc / 8; x++) {
+            const block_f16x16 * b_ptr = b_ptr_start + x * nb;
+
+            __m512 acc[4][8];
+            for (int m = 0; m < 4; m++) {
+                for (int j = 0; j < 8; j++) {
+                    acc[m][j] = _mm512_setzero_ps();
+                }
+            }
+
+            for (int l = 0; l < nb; l++) {
+                __m512 wvec[8];
+                wvec[0] = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +   0)));
+                wvec[1] = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  16)));
+                wvec[2] = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  32)));
+                wvec[3] = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  48)));
+                wvec[4] = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  64)));
+                wvec[5] = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  80)));
+                wvec[6] = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs +  96)));
+                wvec[7] = _mm512_cvtph_ps(_mm256_loadu_si256((const __m256i *)(b_ptr[l].qs + 112)));
+
+                for (int m = 0; m < 4; m++) {
+                    const __m512 act = _mm512_loadu_ps(a_ptrs[m] + l * 16);
+                    acc[m][0] = _mm512_fmadd_ps(wvec[0], act, acc[m][0]);
+                    acc[m][1] = _mm512_fmadd_ps(wvec[1], act, acc[m][1]);
+                    acc[m][2] = _mm512_fmadd_ps(wvec[2], act, acc[m][2]);
+                    acc[m][3] = _mm512_fmadd_ps(wvec[3], act, acc[m][3]);
+                    acc[m][4] = _mm512_fmadd_ps(wvec[4], act, acc[m][4]);
+                    acc[m][5] = _mm512_fmadd_ps(wvec[5], act, acc[m][5]);
+                    acc[m][6] = _mm512_fmadd_ps(wvec[6], act, acc[m][6]);
+                    acc[m][7] = _mm512_fmadd_ps(wvec[7], act, acc[m][7]);
+                }
+            }
+
+            for (int m = 0; m < 4; m++) {
+                for (int j = 0; j < 8; j++) {
+                    s[(y * 4 + m) * bs + x * 8 + j] = _mm512_reduce_add_ps(acc[m][j]);
+                }
+            }
+        }
+    }
+    return;
+#endif
+
+    ggml_gemm_f16_8x16_f32_generic(n, s, bs, vx, vy, nr, nc);
+}
